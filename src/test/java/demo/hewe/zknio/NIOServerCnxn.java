@@ -55,7 +55,7 @@ public class NIOServerCnxn {
         //创建监听线程
         ServerSocketChannel ss = ServerSocketChannel.open();
         ss.socket().setReuseAddress(true);
-        LOG.info("binding to port " + addr);
+        LOG.info("binding to port: ---->>{}", addr);
         ss.socket().bind(addr);
         ss.configureBlocking(false);
         acceptThread = new AcceptThread(ss, selectorThreads);
@@ -136,7 +136,7 @@ public class NIOServerCnxn {
                 selector.select();
                 Iterator<SelectionKey> selectedKeys =
                         selector.selectedKeys().iterator();
-                LOG.debug("selectedKeys size: {}", selector.selectedKeys().size());
+                LOG.debug("selectedKeys size: ---->>{}", selector.selectedKeys().size());
                 while (selectedKeys.hasNext()) {
                     SelectionKey key = selectedKeys.next();
                     selectedKeys.remove();
@@ -161,7 +161,7 @@ public class NIOServerCnxn {
             SocketChannel sc = null;
             try {
                 sc = acceptSocket.accept();
-                LOG.info("Accepted socket connection from "
+                LOG.info("Accepted socket connection from ---->>"
                         + sc.socket().getRemoteSocketAddress());
                 //接收到连接后,开始处理
                 sc.configureBlocking(false);
@@ -216,7 +216,7 @@ public class NIOServerCnxn {
                 ArrayList<SelectionKey> selectedList =
                         new ArrayList<SelectionKey>(selected);
                 Collections.shuffle(selectedList);
-                LOG.trace("selected keys total: {}", selectedList.size());
+                LOG.trace("selected keys total: ---->>{}", selectedList.size());
                 Iterator<SelectionKey> selectedKeys = selectedList.iterator();
                 while (selectedKeys.hasNext()) {
                     SelectionKey key = selectedKeys.next();
@@ -256,7 +256,7 @@ public class NIOServerCnxn {
             if (stopped || !acceptedQueue.offer(accepted)) {
                 return false;
             }
-            LOG.trace("add accepted connection to queue");
+            LOG.trace("add accepted connection to queue,size of queue currently is : ---->>{}", acceptedQueue.size());
             wakeupSelector();
             return true;
         }
