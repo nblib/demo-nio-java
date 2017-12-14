@@ -20,6 +20,18 @@ import java.util.concurrent.LinkedBlockingQueue;
 public class NIOServerCnxn {
     private static final Logger LOG = LoggerFactory.getLogger(NIOServerCnxn.class);
     private NIOServerCnxn.AcceptThread acceptThread;
+    //selectorThreads
+    private final Set<SelectorThread> selectorThreads =
+            new HashSet<SelectorThread>();
+    /**
+     * selectorThread 数量
+     */
+    private static final int NUMSELECTORTHREADS = 1;        // 32 cores sweet spot seems to be 4 selector threads
+
+    /**
+     * zookeeper是否停止
+     */
+    private volatile boolean stopped = true;
 
     public static void main(String[] args) throws IOException, InterruptedException {
         NIOServerCnxn cnxn = new NIOServerCnxn();
@@ -35,20 +47,34 @@ public class NIOServerCnxn {
      * @throws IOException
      */
     public void configure(InetSocketAddress addr) throws IOException {
+
+        //创建selectorThread
+        for (int i = 0; i < NUMSELECTORTHREADS; i++) {
+            selectorThreads.add(new SelectorThread(i));
+        }
+        //创建监听线程
         ServerSocketChannel ss = ServerSocketChannel.open();
         ss.socket().setReuseAddress(true);
         LOG.info("binding to port " + addr);
         ss.socket().bind(addr);
         ss.configureBlocking(false);
-        acceptThread = new AcceptThread(ss);
+        acceptThread = new AcceptThread(ss, selectorThreads);
     }
 
     /**
      * 开启Accept线程
      */
     public void start() {
+        //更新标识位
+        stopped = false;
         if (acceptThread.getState() == Thread.State.NEW) {
             acceptThread.start();
+        }
+        //启动selectorThreads
+        for (SelectorThread thread : selectorThreads) {
+            if (thread.getState() == Thread.State.NEW) {
+                thread.start();
+            }
         }
     }
 
@@ -61,6 +87,10 @@ public class NIOServerCnxn {
         if (acceptThread != null) {
             acceptThread.join();
         }
+        //加入线程等待
+        for (SelectorThread thread : selectorThreads) {
+            thread.join();
+        }
     }
 
     /**
@@ -70,10 +100,17 @@ public class NIOServerCnxn {
         private final ServerSocketChannel acceptSocket;
         private final Selector selector;
 
-        public AcceptThread(ServerSocketChannel ss) throws IOException {
+        private final Collection<SelectorThread> selectorThreads;
+        private Iterator<SelectorThread> selectorIterator;
+
+
+        public AcceptThread(ServerSocketChannel ss, Set<SelectorThread> selectorThreads) throws IOException {
             this.acceptSocket = ss;
             selector = Selector.open();
             acceptSocket.register(selector, SelectionKey.OP_ACCEPT);
+            this.selectorThreads = Collections.unmodifiableList(
+                    new ArrayList<SelectorThread>(selectorThreads));
+            selectorIterator = this.selectorThreads.iterator();
         }
 
         @Override
@@ -126,8 +163,21 @@ public class NIOServerCnxn {
                 sc = acceptSocket.accept();
                 LOG.info("Accepted socket connection from "
                         + sc.socket().getRemoteSocketAddress());
+                //接收到连接后,开始处理
+                sc.configureBlocking(false);
+                //从selectorThreads中选择一个线程
+                if (!selectorIterator.hasNext()) {
+                    selectorIterator = selectorThreads.iterator();
+                }
+                SelectorThread selectorThread = selectorIterator.next();
+                //收到的连接添加到selectorThread中
+                if (!selectorThread.addAcceptedConnection(sc)) {
+                    throw new IOException(
+                            "Unable to add connection to selector queue"
+                                    + (stopped ? " (shutdown in progress)" : ""));
+                }
             } catch (IOException e) {
-                LOG.warn("Error accepting new connection: " + e.getMessage());
+                LOG.warn("Error accepting new connection: ", e);
             }
         }
     }
@@ -151,6 +201,7 @@ public class NIOServerCnxn {
             try {
                 while (true) {
                     select();
+                    //TODO 注册acceptqueue中的连接到selector中.
                 }
             } catch (Exception e) {
                 LOG.warn("Ignoring unexpected exception", e);
@@ -160,22 +211,24 @@ public class NIOServerCnxn {
         private void select() {
             try {
                 selector.select();
-
+                LOG.trace("receive a select event or wakeup sign");
                 Set<SelectionKey> selected = selector.selectedKeys();
                 ArrayList<SelectionKey> selectedList =
                         new ArrayList<SelectionKey>(selected);
                 Collections.shuffle(selectedList);
+                LOG.trace("selected keys total: {}", selectedList.size());
                 Iterator<SelectionKey> selectedKeys = selectedList.iterator();
                 while (selectedKeys.hasNext()) {
                     SelectionKey key = selectedKeys.next();
                     selected.remove(key);
 
                     if (!key.isValid()) {
-                        LOG.debug("key is invalid");
+                        LOG.trace("key is invalid");
                         cleanupSelectionKey(key);
                         continue;
                     }
                     if (key.isReadable() || key.isWritable()) {
+                        //TODO 处理连接发送的内容
                         //handleIO(key);
                         LOG.debug("key is Readable or writable");
                     } else {
@@ -191,6 +244,29 @@ public class NIOServerCnxn {
             if (key != null) {
                 key.cancel();
             }
+        }
+
+        /**
+         * 把一个到来的连接添加到队列中,同时唤醒select()
+         *
+         * @param accepted
+         * @return
+         */
+        public boolean addAcceptedConnection(SocketChannel accepted) {
+            if (stopped || !acceptedQueue.offer(accepted)) {
+                return false;
+            }
+            LOG.trace("add accepted connection to queue");
+            wakeupSelector();
+            return true;
+        }
+
+        /**
+         * 唤醒selector停止等待select(),开始下一步
+         */
+        public void wakeupSelector() {
+            LOG.trace("wakeup a selector");
+            selector.wakeup();
         }
     }
 }
