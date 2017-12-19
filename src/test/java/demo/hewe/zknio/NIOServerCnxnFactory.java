@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -253,8 +254,8 @@ public class NIOServerCnxnFactory {
          * @param key
          */
         private void handleIO(SelectionKey key) {
-            //TODO 新建一个 IOWorkRequest
-
+            IOWorkRequest workRequest = new IOWorkRequest(this, key);
+            workRequest.doWork(key);
         }
 
         /**
@@ -313,21 +314,45 @@ public class NIOServerCnxnFactory {
         }
 
     }
+
     //TODO 创建IOWorkRequest和 WorkerService
-//    private class IOWorkRequest extends WorkerService.WorkRequest {
-//        private final SelectorThread selectorThread;
-//        private final SelectionKey key;
-//        private final NIOServerCnxn cnxn;
-//
-//        IOWorkRequest(SelectorThread selectorThread, SelectionKey key) {
-//            this.selectorThread = selectorThread;
-//            this.key = key;
-//            this.cnxn = (NIOServerCnxn) key.attachment();
-//        }
-//    }
+    private class IOWorkRequest {
+        private final SelectorThread selectorThread;
+        private final SelectionKey key;
+        private final NIOServerCnxn cnxn;
+
+        IOWorkRequest(SelectorThread selectorThread, SelectionKey key) {
+            this.selectorThread = selectorThread;
+            this.key = key;
+            this.cnxn = (NIOServerCnxn) key.attachment();
+        }
+
+        /**
+         * 请求处理,选择到一个key后,交给这个线程被调度执行,这个方法调用NIOcnxn的doIO进行处理
+         *
+         * @param key 选择到的selectionKey
+         */
+        public void doWork(SelectionKey key) {
+            if (!key.isValid()) {
+                LOG.trace("selection key is not valid");
+                return;
+            }
+            if (key.isReadable() || key.isWritable()) {
+                cnxn.doIO(key);
+            }
+        }
+    }
 
     protected NIOServerCnxn createConnection(SocketChannel sock,
                                              SelectionKey sk, SelectorThread selectorThread) throws IOException {
         return new NIOServerCnxn(zkServer, sock, sk, this, selectorThread);
     }
+
+
+    /**
+     * 收到连接发过来的消息的前四个字节,保存总共消息的长度
+     */
+    private final ByteBuffer lenBuffer = ByteBuffer.allocate(4);
+    private ByteBuffer incomingBuffer = lenBuffer;
+
 }
